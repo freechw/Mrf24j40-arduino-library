@@ -40,6 +40,7 @@ Mrf24j::Mrf24j(int pin_reset, int pin_chip_select, int pin_interrupt) {
 
     SPI.setBitOrder(MSBFIRST) ;
     SPI.setDataMode(SPI_MODE0);
+
     SPI.begin();
 }
 
@@ -148,6 +149,41 @@ void Mrf24j::send16(word dest16, char * data) {
     write_short(MRF_TXNCON, (1<<MRF_TXNACKREQ | 1<<MRF_TXNTRIG));
 }
 
+void Mrf24j::send16(word dest16, char * data, byte length) {
+    byte len = length; // get the length of the char* array
+    int i = 0;
+    write_long(i++, bytes_MHR); // header length
+    // +ignoreBytes is because some module seems to ignore 2 bytes after the header?!.
+    // default: ignoreBytes = 0;
+    write_long(i++, bytes_MHR+ignoreBytes+len);
+
+    // 0 | pan compression | ack | no security | no data pending | data frame[3 bits]
+    write_long(i++, 0b01100001); // first byte of Frame Control
+    // 16 bit source, 802.15.4 (2003), 16 bit dest,
+    write_long(i++, 0b10001000); // second byte of frame control
+    write_long(i++, 1);  // sequence number 1
+
+    word panid = get_pan();
+
+    write_long(i++, panid & 0xff);  // dest panid
+    write_long(i++, panid >> 8);
+    write_long(i++, dest16 & 0xff);  // dest16 low
+    write_long(i++, dest16 >> 8); // dest16 high
+
+    word src16 = address16_read();
+    write_long(i++, src16 & 0xff); // src16 low
+    write_long(i++, src16 >> 8); // src16 high
+
+    // All testing seems to indicate that the next two bytes are ignored.
+    //2 bytes on FCS appended by TXMAC
+    i+=ignoreBytes;
+    for (int q = 0; q < len; q++) {
+        write_long(i++, data[q]);
+    }
+    // ack on, and go!
+    write_short(MRF_TXNCON, (1<<MRF_TXNACKREQ | 1<<MRF_TXNTRIG));
+}
+
 void Mrf24j::set_interrupts(void) {
     // interrupts for rx and tx normal complete
     write_short(MRF_INTCON, 0b11110110);
@@ -219,11 +255,14 @@ void Mrf24j::interrupt_handler(void) {
         // buffer data bytes
         int rd_ptr = 0;
         // from (0x301 + bytes_MHR) to (0x301 + frame_length - bytes_nodata - 1)
+        
+        rx_info.frame_length = frame_length; // new position here
+        
         for (int i = 0; i < rx_datalength(); i++) {
             rx_info.rx_data[rd_ptr++] = read_long(0x301 + bytes_MHR + i);
         }
 
-        rx_info.frame_length = frame_length;
+//        rx_info.frame_length = frame_length;
         // same as datasheet 0x301 + (m + n + 2) <-- frame_length
         rx_info.lqi = read_long(0x301 + frame_length);
         // same as datasheet 0x301 + (m + n + 3) <-- frame_length + 1
